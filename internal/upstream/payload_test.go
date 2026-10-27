@@ -178,6 +178,59 @@ func TestPrepareBodyStreamOptions(t *testing.T) {
 	}
 }
 
+// TestNormalizeStop 覆盖 OpenAI 与 WorkBuddy 对 stop 的形态差异：
+// OpenAI 允许 string 或 []string，上游只接 []string；string 必须转成单元素数组，
+// 数组/缺失/null 保持原样，且 sanitize 开关不影响该协议归一。
+func TestNormalizeStop(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want any // nil 表示字段不存在
+	}{
+		{
+			name: "string to single element array",
+			body: `{"model":"deepseek-v4.1-flash","stop":"\n\nHuman:","messages":[]}`,
+			want: []any{"\n\nHuman:"},
+		},
+		{
+			name: "array preserved",
+			body: `{"model":"deepseek-v4.1-flash","stop":["END","###"],"messages":[]}`,
+			want: []any{"END", "###"},
+		},
+		{
+			name: "missing preserved",
+			body: `{"model":"deepseek-v4.1-flash","messages":[]}`,
+			want: nil,
+		},
+		{
+			name: "null preserved",
+			body: `{"model":"deepseek-v4.1-flash","stop":null,"messages":[]}`,
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, sanitize := range []bool{false, true} {
+				obj, err := decodeBody(PrepareBodyOptWithEfforts([]byte(tc.body), sanitize, nil))
+				if err != nil {
+					t.Fatalf("sanitize=%v unmarshal: %v", sanitize, err)
+				}
+				got, present := obj["stop"]
+				if tc.want == nil {
+					if present && got != nil {
+						t.Fatalf("sanitize=%v: stop = %#v, want absent or null", sanitize, got)
+					}
+					continue
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("sanitize=%v: stop = %#v, want %#v", sanitize, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // PrepareBodyOptWithEffertsPreserve helper：PrepareBodyOptWithEfforts 包装。
 func PrepareBodyOptWithEffertsPreserve(t *testing.T, body string) []byte {
 	t.Helper()
@@ -323,7 +376,7 @@ func TestNormalizeToolPatterns(t *testing.T) {
 	}
 
 	t.Run("exa agent_run pattern normalized", func(t *testing.T) {
-		bs := string(byte(92)) // 反斜杠，测试体经工具链多层转义易被吞，运行时拼装保真
+		bs := string(byte(92))                                                                                                                                                                                                                                                                                                                // 反斜杠，测试体经工具链多层转义易被吞，运行时拼装保真
 		body := `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"agent_run","parameters":{"type":"object","properties":{"runId":{"type":"string","pattern":"^agent` + bs + bs + `_run` + bs + bs + `_"}` + `,"query":{"type":"string"}},"required":["query"]}}}]}` //nolint:lll // 实案 body 原样
 		out := string(PrepareBodyOptWithEfforts([]byte(body), false, nil))
 		if got := lookupPattern(t, out, "tools", 0, "function", "parameters", "properties", "runId", "pattern"); got != `^agent_run_` {

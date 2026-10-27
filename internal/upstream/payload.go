@@ -2,6 +2,7 @@
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
 //  3. image_url 归一化（上游只认 OpenAI 对象形态，字符串会 400 code=11101）
+//  4. stop 归一化（上游只认 []string，OpenAI 允许 string 或 []string）
 package upstream
 
 import (
@@ -36,6 +37,7 @@ func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[
 		return src
 	}
 	obj["stream"] = true
+	normalizeStop(obj)
 	// max_completion_tokens → max_tokens 翻译（吸收上游 PR #116，Closes #117）：
 	// OpenAI 规范里 max_tokens 已 deprecated、max_completion_tokens 是新字段；
 	// DeepSeek Harness 等新客户端只发别名。WorkBuddy 上游（CN /v2 与 global
@@ -289,6 +291,18 @@ func normalizeImageURL(obj map[string]any) {
 			}
 			part["image_url"] = map[string]any{"url": imageURL}
 		}
+	}
+}
+
+// normalizeStop 把 OpenAI 允许的字符串 stop 转为上游要求的 []string。
+//
+// WorkBuddy 的 Go 请求结构把 stop 声明为 []string；Claude CLI 等客户端会发送
+// "stop":"..."，上游因此返回 400 code=11101:
+// cannot unmarshal string into Go struct field Request.stop of type []string。
+// 数组、null 和缺失值保持原样；该转换属于协议兼容，与脱敏开关无关。
+func normalizeStop(obj map[string]any) {
+	if stop, ok := obj["stop"].(string); ok {
+		obj["stop"] = []string{stop}
 	}
 }
 
